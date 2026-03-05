@@ -690,9 +690,7 @@ Executive Priorities for Current Quarter:
     <script id="fbNews" type="application/json" set:html={JSON.stringify(fallbackNews)}></script>
     <script>
       // @ts-nocheck
-      const NEWS_KEY = import.meta.env.PUBLIC_NEWSDATA_API_KEY || 'pub_8da7976a5ed14a989354155e78a73052';
-      const GEMINI_KEY = import.meta.env.PUBLIC_GEMINI_API_KEY || '';
-      const MODEL = import.meta.env.PUBLIC_GEMINI_MODEL || 'gemini-2.5-pro';
+      const MODEL_FALLBACK = 'gemini-3.1-pro-preview';
       const THEME_KEY = 'drs-theme-v1';
       const PANEL_KEY = 'drs-panel-v1';
       const NEWS_LOADING_MIN_MS = 1000;
@@ -706,6 +704,10 @@ Executive Priorities for Current Quarter:
       const state = {
         news: [...fallbackNews],
         live: false,
+        geminiLive: false,
+        geminiModel: MODEL_FALLBACK,
+        hasNewsKey: false,
+        hasGeminiKey: false,
         score: 64,
         rev: 2.4,
         svc: 95.1,
@@ -941,14 +943,14 @@ Executive Priorities for Current Quarter:
           ? 'News: Refreshing...'
           : state.live ? `News: Live (${state.news.length})` : `News: Fallback (${state.news.length})`;
         refs.newsDot.className = state.newsLoading ? 'dot warn' : `dot ${state.live ? 'live' : 'warn'}`;
-        refs.gemMode.textContent = GEMINI_KEY ? `Gemini: ${MODEL}` : 'Gemini: Fallback';
-        refs.gemDot.className = `dot ${GEMINI_KEY ? 'live' : 'warn'}`;
+        refs.gemMode.textContent = state.geminiLive ? `Gemini: ${state.geminiModel}` : 'Gemini: Fallback';
+        refs.gemDot.className = `dot ${state.geminiLive ? 'live' : 'warn'}`;
         refs.cycle.textContent = `Cycle: ${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`;
-        refs.governance.textContent = `${NEWS_KEY ? 'PUBLIC_NEWSDATA_API_KEY detected.' : 'Missing PUBLIC_NEWSDATA_API_KEY (demo mode).'} ${GEMINI_KEY ? 'PUBLIC_GEMINI_API_KEY detected.' : 'Missing PUBLIC_GEMINI_API_KEY (fallback copilot).'} Guardrail threshold: ${$('#threshold').value}. News API status: ${state.live ? 'live feed' : 'fallback mode'}${state.newsError ? ` (${state.newsError})` : ''}.`;
+        refs.governance.textContent = `${state.hasNewsKey ? 'NEWSDATA_API_KEY detected (server-side).' : 'Missing NEWSDATA_API_KEY (demo mode).'} ${state.hasGeminiKey ? 'GEMINI_API_KEY detected (server-side).' : 'Missing GEMINI_API_KEY (fallback copilot).'} Guardrail threshold: ${$('#threshold').value}. News API status: ${state.live ? 'live feed' : 'fallback mode'}${state.newsError ? ` (${state.newsError})` : ''}.`;
       }
 
       async function fetchNews(){
-        if(!NEWS_KEY){
+        if(!state.hasNewsKey){
           state.news = [...fallbackNews];
           state.live = false;
           state.newsError = 'missing API key';
@@ -956,21 +958,11 @@ Executive Priorities for Current Quarter:
           return;
         }
         try {
-          const params = new URLSearchParams({
-            apikey: NEWS_KEY,
-            language: 'en',
-            category: 'business',
-            size: '10',
-            image: '1',
-            q: '(supply chain OR logistics OR semiconductor OR tariffs OR manufacturing disruption)'
-          });
-          if(state.newsPage) params.set('page', state.newsPage);
-
-          const url = `https://newsdata.io/api/1/news?${params.toString()}`;
-          const r = await fetch(url, { cache: 'no-store' });
+          const page = state.newsPage ? `?page=${encodeURIComponent(state.newsPage)}` : '';
+          const r = await fetch(`/api/drs/news${page}`, { cache: 'no-store' });
           const d = await r.json().catch(() => ({}));
-          if(!r.ok || d?.status !== 'success'){
-            const message = d?.results?.message || d?.message || `http ${r.status}`;
+          if(!r.ok || !d?.ok){
+            const message = d?.error || `http ${r.status}`;
             throw new Error(message);
           }
 
@@ -1012,10 +1004,20 @@ Executive Priorities for Current Quarter:
         refs.chatSend.disabled=true; refs.chatSend.textContent='Thinking...'; refs.copilotStatus.textContent='Reasoning';
         try {
           let reply = `Risk ${state.score}/100 with exposure $${state.rev.toFixed(1)}M. Mitigation: ${state.actions[2]?.title || 'Supplier reallocation'}.`;
-          if(GEMINI_KEY){
-            const body = { contents:[{parts:[{text:`You are Resolv DRS. Reply with one concise mitigation statement for this prompt: ${text}`}]}], generationConfig:{temperature:0.2,maxOutputTokens:140} };
-            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_KEY}`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
-            if(res.ok){ const data = await res.json(); const out = (data?.candidates?.[0]?.content?.parts || []).map(p=>p.text||'').join(' ').trim(); if(out) reply = out; }
+          if(state.hasGeminiKey){
+            const res = await fetch('/api/drs/gemini', {
+              method:'POST',
+              headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({ prompt: text })
+            });
+            if(res.ok){
+              const data = await res.json().catch(() => ({}));
+              if(data?.reply){
+                reply = String(data.reply);
+                state.geminiLive = data.provider === 'gemini';
+                state.geminiModel = String(data.model || MODEL_FALLBACK);
+              }
+            }
           }
           const bot = document.createElement('div'); bot.className='bubble'; bot.textContent=reply; refs.chat.appendChild(bot);
           refs.copilotNote.innerHTML = `<p>${esc(reply)}</p>`;
@@ -1024,6 +1026,23 @@ Executive Priorities for Current Quarter:
         } finally {
           while(refs.chat.children.length > 7) refs.chat.removeChild(refs.chat.firstElementChild);
           refs.chatSend.disabled=false; refs.chatSend.textContent='Send'; refs.copilotStatus.textContent='Ready';
+        }
+      }
+
+      async function syncRuntimeStatus(){
+        try {
+          const res = await fetch('/api/drs/status', { cache:'no-store' });
+          if(!res.ok) return;
+          const data = await res.json().catch(() => ({}));
+          state.hasNewsKey = Boolean(data?.hasNewsKey);
+          state.hasGeminiKey = Boolean(data?.hasGeminiKey);
+          state.geminiModel = String(data?.geminiModel || MODEL_FALLBACK);
+          state.geminiLive = state.hasGeminiKey;
+        } catch {
+          state.hasNewsKey = false;
+          state.hasGeminiKey = false;
+          state.geminiLive = false;
+          state.geminiModel = MODEL_FALLBACK;
         }
       }
 
@@ -1062,6 +1081,7 @@ Executive Priorities for Current Quarter:
       async function init(){
         initTheme();
         bind();
+        await syncRuntimeStatus();
         showPanel(localStorage.getItem(PANEL_KEY) || 'dashboard');
         await refreshAll();
         setInterval(refreshAll, 15000);

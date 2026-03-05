@@ -142,16 +142,16 @@ cp .env.example .env
 Set these values in `.env`:
 
 ```bash
-PUBLIC_NEWSDATA_API_KEY=your_newsdata_io_key
-PUBLIC_GEMINI_API_KEY=your_google_gemini_api_key
-PUBLIC_GEMINI_MODEL=gemini-2.5-pro
+NEWSDATA_API_KEY=your_newsdata_io_key
+GEMINI_API_KEY=your_google_gemini_api_key
+GEMINI_MODEL=gemini-3.1-pro-preview
 ```
 
 Notes:
 
-* `PUBLIC_NEWSDATA_API_KEY` powers the live disruption feed.
-* `PUBLIC_GEMINI_API_KEY` powers Gemini reasoning in the DRS co-pilot.
-* In this hackathon build, both keys are client-side (`PUBLIC_`), so do not reuse production secrets.
+* `NEWSDATA_API_KEY` powers the live disruption feed via server API route.
+* `GEMINI_API_KEY` powers Gemini reasoning in the DRS co-pilot via server API route.
+* Keys are now server-side only and are not exposed in browser JavaScript.
 
 This command will install all the necessary dependencies defined in the `package.json` file.
 
